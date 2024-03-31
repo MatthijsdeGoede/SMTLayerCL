@@ -1,0 +1,7 @@
+torch
+torchvision
+tqdm
+numpy
+z3-solver
+click
+setuptools~=65.5.1

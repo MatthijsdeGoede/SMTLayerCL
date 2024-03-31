@@ -14,6 +14,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import TensorDataset
 
+from scorer import VisualAdditionScorer
 from smtlayer import SMTLayer
 
 # Download CUDA: https://pytorch.org/get-started/locally/
@@ -141,10 +142,7 @@ class MNISTAdder(nn.Module):
             return out
 
 
-def get_dataloader(
-        train_label_pairs,
-        test_label_pairs,
-        batch_size=128,
+def get_by_class(
         data_dir='/data/data'
 ):
     transform = torchvision.transforms.Compose([
@@ -170,6 +168,16 @@ def get_dataloader(
     x_tr_by_classes = {cl: x_train[y_train == cl] for cl in range(10)}
     x_te_by_classes = {cl: x_test[y_test == cl] for cl in range(10)}
 
+    return x_tr_by_classes, x_te_by_classes
+
+
+def get_dataloader(
+        train_label_pairs,
+        test_label_pairs,
+        batch_size=128,
+):
+    x_tr_by_classes, x_te_by_classes = get_by_class()
+
     train_data = MNISTAddition(x_tr_by_classes, train_label_pairs)
     test_data = MNISTAddition(x_te_by_classes, test_label_pairs)
 
@@ -177,6 +185,30 @@ def get_dataloader(
     test_load = torch.utils.data.DataLoader(test_data, batch_size=batch_size)
 
     return train_load, test_load
+
+
+def get_curriculum_dataloader(
+        train_label_triplets,
+        epochs,
+        batch_size=128,
+):
+    x_tr_by_classes, _ = get_by_class()
+
+    train_loaders = []
+
+    # Sort the triplets ascending based on the symbolic uncertainty score of the output label
+    sorted_train_triplets = sorted(train_label_triplets, key=lambda x: x[-1])
+    N = len(sorted_train_triplets)
+    delta = int(np.ceil(N / epochs))
+
+    # Build the curriculum criteria
+    for t in range(epochs):
+        criteria_pairs = [(x[0], x[1]) for x in sorted_train_triplets[:min((t + 1) * delta, N)]]
+        criteria_data = MNISTAddition(x_tr_by_classes, criteria_pairs)
+        criteria_load = torch.utils.data.DataLoader(criteria_data, batch_size=batch_size)
+        train_loaders.append(criteria_load)
+
+    return train_loaders
 
 
 def train_epoch(epoch_idx, model, optimizer, train_load, use_satlayer=True,
@@ -293,7 +325,7 @@ def pretrain(model, optimizer, train_load, epochs, clip_norm=None):
                                                                               acc_total / total_samp))
 
 
-def train(model, optimizer, train_load, test_load, epochs,
+def train(model, optimizer, train_curriculum_load, test_load, epochs,
           use_satlayer=True, clip_norm=None, sched=None, do_sched_batch=False,
           do_maxsat_forward=None):
     times = []
@@ -301,11 +333,11 @@ def train(model, optimizer, train_load, test_load, epochs,
     for epoch in range(1, epochs + 1):
 
         if do_sched_batch:
-            train_acc, train_loss, elapsed = train_epoch(epoch, model, optimizer, train_load,
+            train_acc, train_loss, elapsed = train_epoch(epoch, model, optimizer, train_curriculum_load[epoch-1],
                                                          use_satlayer=use_satlayer, clip_norm=clip_norm, sched=sched,
                                                          do_maxsat_forward=do_maxsat_forward)
         else:
-            train_acc, train_loss, elapsed = train_epoch(epoch, model, optimizer, train_load,
+            train_acc, train_loss, elapsed = train_epoch(epoch, model, optimizer, train_curriculum_load[epoch-1],
                                                          use_satlayer=use_satlayer, clip_norm=clip_norm, sched=None,
                                                          do_maxsat_forward=do_maxsat_forward)
             if sched is not None:
@@ -345,7 +377,21 @@ def main(
         train_label_pairs = [(0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8), (9, 9)]
     else:
         train_label_pairs = test_label_pairs[:int(pct)]
-    train_load, test_load = get_dataloader(train_label_pairs, test_label_pairs, batch_size=batch_size)
+
+    # TODO: MDG make 2 versions so that vanilla approach can also still be ran
+
+    # Augment the label_pairs with the symbolic uncertainty scores
+    scorer = VisualAdditionScorer()
+    s1_dom = {s1 for s1 in range(10)}
+    s2_dom = {s2 for s2 in range(10)}
+    y_dom = {y for y in range(19)}
+    scores = scorer.score(s1_dom, s2_dom, y_dom)
+    train_label_triples = [(a, b, scores[a + b]) for (a, b) in train_label_pairs]
+
+    # Take the number of epochs to be the number of curriculum criteria, create a custom data loader for each step
+    train_curriculum_load = get_curriculum_dataloader(train_label_triples, epochs, batch_size=batch_size)
+
+    _, test_load = get_dataloader(train_label_pairs, test_label_pairs, batch_size=batch_size)
     pretrain_load, _ = get_dataloader(train_label_pairs, test_label_pairs, batch_size=512)
 
     print('')
@@ -364,12 +410,13 @@ def main(
         sched = torch.optim.lr_scheduler.OneCycleLR(optimizer,
                                                     lr,
                                                     epochs=epochs,
-                                                    steps_per_epoch=len(train_load),
+                                                    steps_per_epoch=len(train_curriculum_load[0]),
                                                     pct_start=1. / float(epochs))
 
-        pretrain(model, optimizer, train_load, pretrain_epochs, clip_norm=clip_norm)
+        pretrain(model, optimizer, pretrain_load, pretrain_epochs, clip_norm=clip_norm)
+
         train_acc, test_acc, elapsed = train(
-            model, optimizer, train_load, test_load, epochs,
+            model, optimizer, train_curriculum_load, test_load, epochs,
             clip_norm=clip_norm, sched=sched, do_sched_batch=True,
             do_maxsat_forward=maxsat_forward
         )

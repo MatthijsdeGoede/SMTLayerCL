@@ -91,7 +91,7 @@ class Z3SolverOp(torch.autograd.Function):
 		do_maxsat: bool=False, 
 		return_cores: bool=False, 
 		is_default_mask: bool=False
-	) -> tuple[torch.Tensor, torch.Tensor]:
+	) -> tuple[torch.Tensor, torch.Tensor, list[bool]]:
 		"""
 			Assert a batch of floating-point inputs in a z3 solver,
 			and check satisfiability. This is the essential forward pass
@@ -117,6 +117,7 @@ class Z3SolverOp(torch.autograd.Function):
 				
 		x_flip = torch.ones_like(x)
 		y = []
+		symbolic_rep = []
 		cores = []
 
 		if is_default_mask:
@@ -146,18 +147,22 @@ class Z3SolverOp(torch.autograd.Function):
 				else:
 					opt.add(xcon)
 				solver.add(xcon)
-			
+
+			# TODO: MDG fix backpropagation of symbolic_rep
+
 			# check satisfiability of the current solver state
 			if solver.check() == z3.sat:
 				# it's sat, so read out the satisfying assignment,
 				# convert to float, and save the tensor
 				m = solver.model()
+				symbolic_rep = [z3.is_true(m.eval(u, model_completion=True)) for u in z3_inputs]
 				outputs = [z3.is_true(m.eval(v, model_completion=True)) for v in z3_outputs]
 				y.append(2*(torch.Tensor(outputs).unsqueeze(0).float().to(x.device)-0.5))
 			else:
 				if do_maxsat:
 					opt.check()
 					m = opt.model()
+					symbolic_rep = [z3.is_true(m.eval(u, model_completion=True)) for u in z3_inputs]
 					outputs = [z3.is_true(m.eval(v, model_completion=True)) for v in z3_outputs]
 					y.append(2*(torch.Tensor(outputs).unsqueeze(0).float().to(x.device)-0.5))
 					indices_minus = [
@@ -184,9 +189,9 @@ class Z3SolverOp(torch.autograd.Function):
 			y = torch.nested.to_padded_tensor(torch.nested.nested_tensor(y), 2)
 		
 		if return_cores:
-			return y, cores
+			return y, cores, symbolic_rep
 		else:
-			return y, x_flip
+			return y, x_flip, symbolic_rep
 
 	@staticmethod
 	def _assert_clauses(theory: list[z3.BoolRef], clause_ids: list[z3.BoolRef], solver: z3.Solver) -> None:
@@ -247,7 +252,7 @@ class Z3SolverOp(torch.autograd.Function):
 		ctx.is_default_mask = is_default_mask
 		ctx.grad_scaling = grad_scaling
 
-		y, x_flip = Z3SolverOp._assert_and_check(x, mask, ctx.z3_vars, None, ctx.solver, ctx.opt, 
+		y, x_flip, symbolic_rep = Z3SolverOp._assert_and_check(x, mask, ctx.z3_vars, None, ctx.solver, ctx.opt,
 														do_maxsat=do_maxsat_forward,
 														return_cores=False, is_default_mask=is_default_mask)
 		
