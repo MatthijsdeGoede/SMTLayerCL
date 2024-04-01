@@ -197,6 +197,7 @@ def get_dataloader(
 def get_curriculum_dataloader(
         train_label_triplets,
         epochs,
+        use_curriculum,
         batch_size=128,
 ):
     x_tr_by_classes, _ = get_by_class()
@@ -210,7 +211,12 @@ def get_curriculum_dataloader(
 
     # Build the curriculum criteria
     for t in range(epochs):
-        criteria_pairs = [(x[0], x[1]) for x in sorted_train_triplets[:min((t + 1) * delta, N)]]
+        if use_curriculum:
+            criteria_pairs = [(x[0], x[1]) for x in sorted_train_triplets[:min((t + 1) * delta, N)]]
+        else:
+            # when curriculum learning is turned off, return the same data loader for each epoch
+            criteria_pairs = [(x[0], x[1]) for x in sorted_train_triplets]
+
         criteria_data = MNISTAddition(x_tr_by_classes, criteria_pairs)
         criteria_load = torch.utils.data.DataLoader(criteria_data, batch_size=batch_size)
         train_loaders.append(criteria_load)
@@ -230,8 +236,8 @@ def train_epoch(epoch_idx, model, optimizer, train_load, use_satlayer=True,
 
     for batch_idx, (data, target, symbolic_truth) in tloader:
 
-        (data1, data2), target, symbolic_truth = data, target.cuda(), symbolic_truth
-        data1, data2, symbolic_truth = data1.cuda(), data2.cuda(), symbolic_truth.cuda()
+        (data1, data2), target, symbolic_truth = data, target.cuda(), symbolic_truth.cuda()
+        data1, data2 = data1.cuda(), data2.cuda()
         data = (data1, data2)
 
         optimizer.zero_grad()
@@ -279,8 +285,8 @@ def test_epoch(epoch_idx, model, test_load, use_satlayer=True):
     for batch_idx, (data, target, symbolic_truth) in tloader:
         with torch.no_grad():
 
-            (data1, data2), target, symbolic_truth = data, target.cuda(), symbolic_truth
-            data1, data2, symbolic_truth = data1.cuda(), data2.cuda(), symbolic_truth.cuda()
+            (data1, data2), target, symbolic_truth = data, target.cuda(), symbolic_truth.cuda()
+            data1, data2 = data1.cuda(), data2.cuda()
             data = (data1, data2)
 
             output, symbolic_rep = model(data, return_sat=use_satlayer, do_maxsat=True)
@@ -378,6 +384,7 @@ def train(model, optimizer, train_curriculum_load, test_load, epochs,
 @click.option('--batch_size', default=128, show_default=True, help='Batch size.')
 @click.option('--trials', default=1, show_default=True, help='Number of trials.')
 @click.option('--clip_norm', default=0.1, show_default=True, help='Gradient clipping norm.')
+@click.option('--use_curriculum', is_flag=True, show_default=True, help='Use curriculum learning.')
 @click.option('--maxsat_forward', is_flag=True, show_default=True, help='Maxsat forward pass.')
 @click.option('--maxsat_backward', is_flag=True, show_default=True, help='Maxsat backward pass.')
 def main(
@@ -389,7 +396,8 @@ def main(
         trials=1,
         clip_norm=0.1,
         maxsat_forward=False,
-        maxsat_backward=False
+        maxsat_backward=False,
+        use_curriculum=False
 ):
     test_label_pairs = list(itertools.product(list(range(0, 10)), repeat=2))
     if pct <= 10:
@@ -397,7 +405,7 @@ def main(
     else:
         train_label_pairs = test_label_pairs[:int(pct)]
 
-    # TODO: MDG make 2 versions so that vanilla approach can also still be ran
+    # TODO: MDG, tweak settings to explore when curriculum learning is be more beneficial
 
     # Augment the label_pairs with the symbolic uncertainty scores
     scorer = VisualAdditionScorer()
@@ -408,7 +416,7 @@ def main(
     train_label_triples = [(a, b, scores[a + b]) for (a, b) in train_label_pairs]
 
     # Take the number of epochs to be the number of curriculum criteria, create a custom data loader for each step
-    train_curriculum_load = get_curriculum_dataloader(train_label_triples, epochs, batch_size=batch_size)
+    train_curriculum_load = get_curriculum_dataloader(train_label_triples, epochs, use_curriculum, batch_size=batch_size)
 
     _, test_load = get_dataloader(train_label_pairs, test_label_pairs, batch_size=batch_size)
     pretrain_load, _ = get_dataloader(train_label_pairs, test_label_pairs, batch_size=512)
@@ -448,7 +456,7 @@ def main(
         test_sym_accs.append(test_sym_acc)
         times.append(elapsed)
 
-        print('\n[{} of trials]: train={:.4},{.4}, test={:.4},{:.4} time={:.4}\n'.format(i, train_acc, train_sym_acc, test_acc, test_sym_acc, elapsed))
+        print('\n[{} of trials]: train={:.4},{:.4}, test={:.4},{:.4} time={:.4}\n'.format(i, train_acc, train_sym_acc, test_acc, test_sym_acc, elapsed))
         print('-' * 20)
 
     train_accs = np.array(train_accs)
