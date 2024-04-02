@@ -150,7 +150,8 @@ class MNISTAdder(nn.Module):
 
 
 def get_by_class(
-        data_dir='/data/data'
+        data_dir='/data/data',
+        data_fraction=0.5
 ):
     transform = torchvision.transforms.Compose([
         torchvision.transforms.ToTensor()
@@ -172,8 +173,14 @@ def get_by_class(
     x_train, y_train = mnist_train.data / 255., mnist_train.targets
     x_test, y_test = mnist_test.data / 255., mnist_test.targets
 
-    x_tr_by_classes = {cl: x_train[y_train == cl] for cl in range(10)}
-    x_te_by_classes = {cl: x_test[y_test == cl] for cl in range(10)}
+    x_tr_by_classes = {}
+    x_te_by_classes = {}
+
+    for cl in range(10):
+        train_class = x_train[y_train == cl]
+        x_tr_by_classes[cl] = train_class[:int(len(train_class) * data_fraction)]
+        test_class = x_test[y_test == cl]
+        x_te_by_classes[cl] = test_class[:int(len(test_class) * data_fraction)]
 
     return x_tr_by_classes, x_te_by_classes
 
@@ -397,7 +404,7 @@ def main(
         clip_norm=0.1,
         maxsat_forward=False,
         maxsat_backward=False,
-        use_curriculum=False
+        use_curriculum=True
 ):
     test_label_pairs = list(itertools.product(list(range(0, 10)), repeat=2))
     if pct <= 10:
