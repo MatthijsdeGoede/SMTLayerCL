@@ -431,6 +431,8 @@ def run(
     scores = scorer.score(s1_dom, s2_dom, y_dom)
     train_label_triples = [(a, b, scores[a + b]) for (a, b) in train_label_pairs]
 
+    print(f"Starting experiment with trials={trials}, epochs={epochs}, data_fraction={data_fraction} and use_curriculum={use_curriculum}")
+
     # Take the number of epochs to be the number of curriculum criteria, create a custom data loader for each step
     train_curriculum_load = get_curriculum_dataloader(train_label_triples, epochs, use_curriculum, batch_size=batch_size, data_fraction=data_fraction)
 
@@ -468,14 +470,14 @@ def run(
         times.append(elapsed)
         trial_dfs.append(trial_df)
 
-
-        print('\n[{} of trials]: train={:.4},{:.4}, test={:.4},{:.4} time={:.4}\n'.format(i, train_acc, train_sym_acc, test_acc, test_sym_acc, elapsed))
+        print('\n[trial {} result]: train={:.4},{:.4}, test={:.4},{:.4} time={:.4}\n'.format(i+1, train_acc, train_sym_acc, test_acc, test_sym_acc, elapsed))
         print('-' * 20)
-        result_df = pd.concat(trial_dfs, ignore_index=True)
-        now = datetime.now().strftime("%Y%m%d%H%M%S")
-        result_file = f"../results/{now}_{int(data_fraction*100)}_{epochs}{'_curriculum' if use_curriculum else ''}.csv"
-        result_df.to_csv(result_file, index=False)
-        print(f"Results output written to {result_file}")
+
+    result_df = pd.concat(trial_dfs, ignore_index=True)
+    now = datetime.now().strftime("%Y%m%d%H%M%S")
+    result_file = f"../results/{now}_{int(data_fraction*100)}_{epochs}{'_curriculum' if use_curriculum else ''}.csv"
+    result_df.to_csv(result_file, index=False)
+    print(f"Results output written to {result_file}")
 
     train_accs = np.array(train_accs)
     train_sym_accs = np.array(train_sym_accs)

@@ -15,4 +15,4 @@ def run_experiments():
     run(trials=5, epochs=10, data_fraction=0.5, use_curriculum=True)
 
 
-
+run_experiments()
