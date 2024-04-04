@@ -4,4 +4,5 @@ tqdm
 numpy
 z3-solver
 click
+pandas
 setuptools~=65.5.1
