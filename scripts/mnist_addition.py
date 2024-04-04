@@ -371,8 +371,8 @@ def train(model, optimizer, train_curriculum_load, test_load, epochs, trial,
         "train_sym_acc": [],
         "test_acc": [],
         "test_sym_acc": [],
-        "pairs_seen": [j[0] for j in train_curriculum_load],
-        "datapoints": [sum(len(train_curriculum_load[j][1]) for j in range(0, i+1)) for i in range(len(train_curriculum_load))],
+        "pairs": [j[0] for j in train_curriculum_load],
+        "samples": [sum(len(train_curriculum_load[j][1]) for j in range(0, i+1)) for i in range(len(train_curriculum_load))],
         "duration": [],
     }
 
@@ -404,18 +404,18 @@ def train(model, optimizer, train_curriculum_load, test_load, epochs, trial,
 
     return train_acc, train_sym_acc, test_sym_acc, test_acc, sum(times) / float(epochs), pd.DataFrame(trial_data)
 
-def main(
+def run(
         lr=1.,
         pretrain_epochs=0,
         pct=100,
-        epochs=2,
+        epochs=10,
         data_fraction=0.1,
         batch_size=128,
         trials=1,
         clip_norm=0.1,
         maxsat_forward=False,
         maxsat_backward=False,
-        use_curriculum=False,
+        use_curriculum=True,
 ):
     test_label_pairs = list(itertools.product(list(range(0, 10)), repeat=2))
     if pct <= 10:
@@ -489,4 +489,4 @@ def main(
 
 
 if __name__ == '__main__':
-    main()
+    run()
