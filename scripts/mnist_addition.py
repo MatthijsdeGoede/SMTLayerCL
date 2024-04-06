@@ -399,9 +399,7 @@ def train(model, optimizer, train_curriculum_load, test_load, epochs, trial,
         trial_data["test_acc"].append(test_acc)
         trial_data["test_sym_acc"].append(test_sym_acc)
 
-        if train_acc > 0.999:
-            break
-
+    print(trial_data)
     return train_acc, train_sym_acc, test_sym_acc, test_acc, sum(times) / float(epochs), pd.DataFrame(trial_data)
 
 def run(
