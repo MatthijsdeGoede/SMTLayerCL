@@ -372,7 +372,7 @@ def train(model, optimizer, train_curriculum_load, test_load, epochs, trial,
         "test_acc": [],
         "test_sym_acc": [],
         "pairs": [j[0] for j in train_curriculum_load],
-        "samples": [sum(len(train_curriculum_load[j][1]) for j in range(0, i+1)) for i in range(len(train_curriculum_load))],
+        "samples": [sum(len(train_curriculum_load[j][1]) * 128 for j in range(0, i+1)) for i in range(len(train_curriculum_load))],
         "duration": [],
     }
 
