@@ -1,10 +1,6 @@
 import torch
-import torch.nn as nn
-import torch.optim as optim
 import torch.nn.functional as F
-from torch.autograd.function import once_differentiable
 
-import warnings
 import z3
 
 class Z3SolverOp(torch.autograd.Function):
@@ -27,9 +23,9 @@ class Z3SolverOp(torch.autograd.Function):
 			Returns: If `float_v` is negative, then `var` negated, otherwise
 				`var`.
 		"""
-		
+
 		return z3.Not(var) if float_v < 0 else var
-	
+
 	@staticmethod
 	def _z3_var_constraints(v: float, z3_vars: list[z3.BoolRef]) -> list[z3.BoolRef]:
 		"""
@@ -52,7 +48,7 @@ class Z3SolverOp(torch.autograd.Function):
 			Arguments:
 				v:        Floating-point vector
 				z3_vars:  List of z3 variables
-			
+
 			Returns: A list of z3 literals, one for each element of `v`.
 		"""
 		return [Z3SolverOp._float_to_bool(v[i], vs[i]) for i in range(len(vs))]
@@ -66,7 +62,7 @@ class Z3SolverOp(torch.autograd.Function):
 				mask:     Mask of input and output variables
 				z3_vars:  List of z3 variables
 				var_ids:  List of z3 variables used for unsat core tracking
-			
+
 			Returns: A tuple of lists of z3 variables: (input, output, input_ids)
 		"""
 		input_idx = torch.nonzero(mask).flatten().detach().cpu().numpy().tolist()
@@ -82,16 +78,16 @@ class Z3SolverOp(torch.autograd.Function):
 
 	@staticmethod
 	def _assert_and_check(
-		x: torch.Tensor, 
-		mask: torch.Tensor, 
-		z3_vars: list[z3.BoolRef], 
-		var_ids: list[z3.BoolRef],
-		solver: z3.Solver,
-		opt: z3.Optimize, 
-		do_maxsat: bool=False, 
-		return_cores: bool=False, 
-		is_default_mask: bool=False
-	) -> tuple[torch.Tensor, torch.Tensor, list[bool]]:
+			x: torch.Tensor,
+			mask: torch.Tensor,
+			z3_vars: list[z3.BoolRef],
+			var_ids: list[z3.BoolRef],
+			solver: z3.Solver,
+			opt: z3.Optimize,
+			do_maxsat: bool=False,
+			return_cores: bool=False,
+			is_default_mask: bool=False
+	) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 		"""
 			Assert a batch of floating-point inputs in a z3 solver,
 			and check satisfiability. This is the essential forward pass
@@ -109,12 +105,12 @@ class Z3SolverOp(torch.autograd.Function):
 				return_cores: Whether to enable unsat core tracking
 				is_default_mask: Whether the mask is a default mask that applies
 								 to the entire batch, or a per-example mask
-			
-			Returns: If the input given by the assignment is sat, then return 
-				the satisfying assignment as a floating-point tensor. If unsat, 
-				return the default value of all-0's.
+
+			Returns: If the input given by the assignment is sat, then return
+				the satisfying assignment as a floating-point tensor. If unsat,
+				return the default value of all-0's. Also return the assignments of the symbolic input variables
 		"""
-				
+
 		x_flip = torch.ones_like(x)
 		y = []
 		symbolic_rep = []
@@ -123,7 +119,7 @@ class Z3SolverOp(torch.autograd.Function):
 		if is_default_mask:
 			z3_inputs, z3_outputs, input_ids = Z3SolverOp_MaxSat._get_input_output_vars(mask[0], z3_vars, var_ids)
 			n_outputs = len(z3_outputs)
-		
+
 		# input is batched; we should update this to a parallel implementation,
 		# as each iteration is independent.
 		for i, xi in enumerate(x):
@@ -132,11 +128,11 @@ class Z3SolverOp(torch.autograd.Function):
 			if not is_default_mask:
 				z3_inputs, z3_outputs, input_ids = Z3SolverOp_MaxSat._get_input_output_vars(mask[i], z3_vars, var_ids)
 				n_outputs = len(z3_outputs)
-			
+
 			# save the current state of the solver
 			solver.push()
 			opt.push()
-			
+
 			# convert the floating-point input to a set of z3 literals,
 			# and assert each one in the solver
 			li = Z3SolverOp._floatvec_to_cons(xi[mask[i]==1], z3_inputs)
@@ -148,26 +144,27 @@ class Z3SolverOp(torch.autograd.Function):
 					opt.add(xcon)
 				solver.add(xcon)
 
-			# TODO: MDG fix backpropagation of symbolic_rep
-
 			# check satisfiability of the current solver state
 			if solver.check() == z3.sat:
 				# it's sat, so read out the satisfying assignment,
 				# convert to float, and save the tensor
 				m = solver.model()
-				symbolic_rep = [z3.is_true(m.eval(u, model_completion=True)) for u in z3_inputs]
+				symbols = [z3.is_true(m.eval(u, model_completion=True)) for u in z3_inputs]
+				symbolic_rep.append(2*(torch.Tensor(symbols).unsqueeze(0).float().to(x.device)-0.5))
 				outputs = [z3.is_true(m.eval(v, model_completion=True)) for v in z3_outputs]
 				y.append(2*(torch.Tensor(outputs).unsqueeze(0).float().to(x.device)-0.5))
 			else:
 				if do_maxsat:
 					opt.check()
 					m = opt.model()
-					symbolic_rep = [z3.is_true(m.eval(u, model_completion=True)) for u in z3_inputs]
+					symbols = [z3.is_true(m.eval(u, model_completion=True)) for u in z3_inputs]
+					symbolic_rep.append(2*(torch.Tensor(symbols).unsqueeze(0).float().to(x.device)-0.5))
+					symbolic_rep.append(symbol_tensor)
 					outputs = [z3.is_true(m.eval(v, model_completion=True)) for v in z3_outputs]
 					y.append(2*(torch.Tensor(outputs).unsqueeze(0).float().to(x.device)-0.5))
 					indices_minus = [
-						j 
-						for j, xcon in enumerate(li) 
+						j
+						for j, xcon in enumerate(li)
 						if z3.is_false(m.eval(xcon, model_completion=True))
 					]
 					x_flip[i, indices_minus] = -1*x_flip[i, indices_minus]
@@ -175,19 +172,21 @@ class Z3SolverOp(torch.autograd.Function):
 					# it's unsat, so get the unsat core if requested,
 					# and return the default value of all-0's
 					y.append(torch.zeros((1, n_outputs)).float().to(x.device))
-			
+
 			# recover the previous solver state
 			opt.pop()
 			solver.pop()
 			cores.append(core)
-		
+
 		# construct the result tensor, and convert from
 		# {0,1} to {-1,1}
 		try:
 			y = torch.concat(y)
 		except:
 			y = torch.nested.to_padded_tensor(torch.nested.nested_tensor(y), 2)
-		
+
+		symbolic_rep = torch.concat(symbolic_rep)
+
 		if return_cores:
 			return y, cores, symbolic_rep
 		else:
@@ -202,7 +201,7 @@ class Z3SolverOp(torch.autograd.Function):
 				theory:     List of z3 clauses
 				clause_ids: List of z3 variables used for unsat core tracking
 				solver:     z3 solver
-			
+
 			Returns: None
 		"""
 
@@ -214,14 +213,14 @@ class Z3SolverOp(torch.autograd.Function):
 
 	@staticmethod
 	def forward(
-		ctx: torch.autograd.function._ContextMethodMixin,
-		x: torch.Tensor,
-		do_maxsat_forward: bool, 
-		mask: torch.Tensor,
-		grad_scaling: float,
-		model: torch.nn.Module,
-		is_default_mask
-	) -> torch.Tensor:
+			ctx: torch.autograd.function._ContextMethodMixin,
+			x: torch.Tensor,
+			do_maxsat_forward: bool,
+			mask: torch.Tensor,
+			grad_scaling: float,
+			model: torch.nn.Module,
+			is_default_mask
+	) -> tuple[torch.Tensor, torch.Tensor]:
 		"""
 			Forward pass of the layer. Takes a batch of floating-point inputs,
 			and returns a batch of floating-point outputs.
@@ -233,15 +232,15 @@ class Z3SolverOp(torch.autograd.Function):
 									true, then the maxsat engine is used instead of sat
 				mask:       		Mask of input and output variables
 				grad_scaling: 		Scaling factor for the gradient
-				model:      		The layer itself 
+				model:      		The layer itself
 				is_default_mask: 	Whether the mask is a default mask that applies
 									to the entire batch, or a per-example mask
-			
-			Returns: A batch of floating-point outputs.
+
+			Returns: A batch of floating-point outputs, and the assignments of the symbolic input variables
 		"""
 
 		in_device = x.device
-		
+
 		ctx.z3_vars = model._z3_vars
 		ctx.var_ids = model._var_ids
 		ctx.clause_ids = model._clause_ids
@@ -253,17 +252,18 @@ class Z3SolverOp(torch.autograd.Function):
 		ctx.grad_scaling = grad_scaling
 
 		y, x_flip, symbolic_rep = Z3SolverOp._assert_and_check(x, mask, ctx.z3_vars, None, ctx.solver, ctx.opt,
-														do_maxsat=do_maxsat_forward,
-														return_cores=False, is_default_mask=is_default_mask)
-		
+															   do_maxsat=do_maxsat_forward,
+															   return_cores=False, is_default_mask=is_default_mask)
+
 		ctx.save_for_backward(x, mask, y, x_flip)
 
-		return y
+		return y, symbolic_rep
 
 	@staticmethod
 	def backward(
-		ctx: torch.autograd.function._ContextMethodMixin, 
-		grad_output: torch.Tensor
+			ctx: torch.autograd.function._ContextMethodMixin,
+			grad_output: torch.Tensor,
+			symbolic_rep: torch.Tensor,
 	) -> tuple[torch.Tensor, None, torch.Tensor, None, None, None]:
 		"""
 			Backward pass of the layer. Takes the gradient of the loss
@@ -274,11 +274,11 @@ class Z3SolverOp(torch.autograd.Function):
 				ctx:            Context object
 				grad_output:    Gradient of the loss with respect to the
 								layer's output
-			
+
 			Returns: The gradient of the loss with respect to the layer's
 				input.
 		"""
-		
+
 		# Recover state saved in the forward pass
 		x, mask, y, x_flip = ctx.saved_tensors
 		z3_vars = ctx.z3_vars
@@ -288,9 +288,9 @@ class Z3SolverOp(torch.autograd.Function):
 		theory = ctx.theory
 		is_default_mask = ctx.is_default_mask
 		grad_scaling = ctx.grad_scaling
-		
+
 		in_device = x.device
-		
+
 		grad_x = grad_mask = grad_model = grad_is_default_mask = None
 
 		# The basic idea is to use the provided gradient
@@ -321,7 +321,7 @@ class Z3SolverOp(torch.autograd.Function):
 		if is_default_mask:
 			z3_inputs, z3_outputs, input_ids = Z3SolverOp._get_input_output_vars(mask[0], z3_vars, var_ids)
 			n_outputs = len(z3_outputs)
-		
+
 		for i, new_yi in enumerate(new_y):
 
 			pad_mask = new_y[i] != 2
@@ -363,13 +363,13 @@ class Z3SolverOp(torch.autograd.Function):
 				indices = [int(str(phi)[3:]) for phi in core if str(phi).startswith('var')]
 				if grad_scaling is not None:
 					sws = F.softmax(-grad_scaling*torch.abs(x[i,indices]), dim=-1)
-				
+
 				for j, idx in enumerate(indices):
 					if grad_scaling is None:
 						grad_x[i, idx] += grad_minus[i, idx]
 					else:
 						grad_x[i, idx] += sws[j]*grad_minus[i, idx]
-		
+
 		del x_clone
 
 		grad_x *= x_flip
@@ -383,8 +383,9 @@ class Z3SolverOp_MaxSat(Z3SolverOp):
 
 	@staticmethod
 	def backward(
-		ctx: torch.autograd.function._ContextMethodMixin,
-		grad_output: torch.Tensor
+			ctx: torch.autograd.function._ContextMethodMixin,
+			grad_output: torch.Tensor,
+			symbolic_rep: torch.Tensor,
 	) -> tuple[torch.Tensor, None, torch.Tensor, None, None, None]:
 		"""
 			Backward pass of the layer. Takes the gradient of the loss
@@ -396,11 +397,11 @@ class Z3SolverOp_MaxSat(Z3SolverOp):
 				ctx:            Context object
 				grad_output:    Gradient of the loss with respect to the
 								layer's output
-			
+
 			Returns: The gradient of the loss with respect to the layer's
 				input.
 		"""
-		
+
 		# Recover state saved in the forward pass
 		x, mask, y, x_flip = ctx.saved_tensors
 		z3_vars = ctx.z3_vars
@@ -411,9 +412,9 @@ class Z3SolverOp_MaxSat(Z3SolverOp):
 		theory = ctx.theory
 		is_default_mask = ctx.is_default_mask
 		grad_scaling = ctx.grad_scaling
-		
+
 		in_device = x.device
-		
+
 		grad_x = grad_mask = grad_model = grad_is_default_mask = None
 
 		# The basic idea is to use the provided gradient
@@ -444,7 +445,7 @@ class Z3SolverOp_MaxSat(Z3SolverOp):
 		if is_default_mask:
 			z3_inputs, z3_outputs, input_ids = Z3SolverOp._get_input_output_vars(mask[0], z3_vars, var_ids)
 			n_outputs = len(z3_outputs)
-		
+
 		for i, new_yi in enumerate(new_y):
 
 			weight = torch.abs(grad_output[i]).sum()
@@ -489,7 +490,7 @@ class Z3SolverOp_MaxSat(Z3SolverOp):
 				opt.add(z3.Not(z3.And([xcon == m(xcon) for xcon in li])))
 
 			opt.pop()
-		
+
 		del x_clone
 
 		grad_x *= x_flip
@@ -505,18 +506,18 @@ class SMTLayer(torch.nn.Module):
 	"""
 
 	def __init__(
-		self,
-		input_size: int,
-		output_size: int,
-		theory: list[z3.BoolRef],
-		variables: list[z3.BoolRef]=None,
-		default_mask: torch.Tensor=None,
-		fixed_inputs: list[z3.BoolRef]=None,
-		solverop: str='smt'
+			self,
+			input_size: int,
+			output_size: int,
+			theory: list[z3.BoolRef],
+			variables: list[z3.BoolRef]=None,
+			default_mask: torch.Tensor=None,
+			fixed_inputs: list[z3.BoolRef]=None,
+			solverop: str='smt'
 	):
-		
+
 		super().__init__()
-		
+
 		self.input_size = input_size
 		self.output_size = output_size
 		self.theory = theory
@@ -533,7 +534,7 @@ class SMTLayer(torch.nn.Module):
 		else:
 			self._n_vars = len(variables)
 			self._z3_vars = variables
-				
+
 		self._var_ids = [z3.Bool('var{}'.format(i)) for i in range(len(self._z3_vars))]
 		self._clause_ids = [z3.Bool('clause{}'.format(i)) for i in range(len(theory))]
 
@@ -544,14 +545,14 @@ class SMTLayer(torch.nn.Module):
 
 		self._solverop._assert_clauses(theory, None, self._solver)
 		self._solverop._assert_clauses(theory, None, self._opt)
-				
+
 	def forward(
-		self, 
-		x: torch.Tensor, 
-		mask: torch.Tensor=None,
-		grad_scaling: float=None,
-		do_maxsat_forward: bool=False
-	) -> torch.Tensor:
+			self,
+			x: torch.Tensor,
+			mask: torch.Tensor=None,
+			grad_scaling: float=None,
+			do_maxsat_forward: bool=False
+	) -> tuple[torch.Tensor, torch.Tensor]:
 		"""
 			Forward pass of the layer. Takes a batch of floating-point inputs,
 			and returns a batch of floating-point outputs.
@@ -562,8 +563,8 @@ class SMTLayer(torch.nn.Module):
 				grad_scaling: Scaling factor for the gradient
 				do_maxsat_forward: Whether to use maxsat. Defaults to false, but if
 									true, then the maxsat engine is used instead of sat
-			
-			Returns: A batch of floating-point outputs.
+
+			Returns: A batch of floating-point outputs, and the symbolic variable assignments
 		"""
 
 		if mask is not None and mask.shape != x.shape:
@@ -577,7 +578,7 @@ class SMTLayer(torch.nn.Module):
 			is_default_mask = True
 		else:
 			is_default_mask = False
-		
+
 		return self._solverop.apply(
 			x,
 			do_maxsat_forward,

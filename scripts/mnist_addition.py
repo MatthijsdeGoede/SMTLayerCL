@@ -1,23 +1,21 @@
-import numpy as np
-import numpy.random as npr
-
 import itertools
 import random
-import z3
-import click
-from tqdm import tqdm
+from datetime import datetime
 
+import numpy as np
+import pandas as pd
 import torch
-import torchvision
 import torch.nn as nn
-import torch.optim as optim
 import torch.nn.functional as F
+import torch.optim as optim
+import torchvision
+import z3
 from torch.utils.data import TensorDataset
+from tqdm import tqdm
 
 from scorer import VisualAdditionScorer
 from smtlayer import SMTLayer
 
-# Download CUDA: https://pytorch.org/get-started/locally/
 print(f"Cuda available: {torch.cuda.is_available()}")
 
 
@@ -30,9 +28,14 @@ class MNISTAddition(torch.utils.data.Dataset):
 
         self.len = sum([len(x_by_classes[cl]) for cl in x_by_classes])
 
-        self.bin_repr = np.vectorize(
+        self.bin_target = np.vectorize(
             lambda x: np.array(list(np.binary_repr(x, 5)), dtype=np.float32),
             signature="()->({})".format(5))
+
+        self.bin_symbolic = np.vectorize(
+            lambda x: np.array(list(np.binary_repr(x[0], 4)) + list(np.binary_repr(x[1], 4)), dtype=np.float32),
+            signature="(m)->(n)"
+        )
 
     def __len__(self):
         return self.len
@@ -42,7 +45,8 @@ class MNISTAddition(torch.utils.data.Dataset):
         inst1 = random.choice(self.by_classes[pair[0]]).unsqueeze(0)
         inst2 = random.choice(self.by_classes[pair[1]]).unsqueeze(0)
 
-        return (inst1, inst2), torch.tensor(self.bin_repr(sum(pair))).float()
+        return (inst1, inst2), torch.tensor(self.bin_target(sum(pair))).float(), torch.tensor(
+            self.bin_symbolic(pair)).float()
 
 
 class MNISTExtractor(nn.Module):
@@ -127,23 +131,26 @@ class MNISTAdder(nn.Module):
         out1 = self.extractor(x[0])
         out2 = self.extractor(x[1])
         combined = torch.cat([out1, out2], dim=1)
+        symbolic_rep = torch.empty((1, 1))
+
         if return_feats:
             return combined
         else:
             if return_sat:
                 pads = torch.zeros((x[0].shape[0], 5), dtype=out1.dtype, device=out1.device)
                 combined = torch.cat([combined, pads], dim=1)
-                out = self.sat(combined, do_maxsat_forward=do_maxsat)
+                out, symbolic_rep = self.sat(combined, do_maxsat_forward=do_maxsat)
             else:
                 out = F.relu(self.fc1(combined))
                 out = F.relu(self.fc2(out))
                 out = self.fc3(out)
 
-            return out
+            return out, symbolic_rep
 
 
 def get_by_class(
-        data_dir='/data/data'
+        data_dir='/data/data',
+        data_fraction=1.,
 ):
     transform = torchvision.transforms.Compose([
         torchvision.transforms.ToTensor()
@@ -165,8 +172,14 @@ def get_by_class(
     x_train, y_train = mnist_train.data / 255., mnist_train.targets
     x_test, y_test = mnist_test.data / 255., mnist_test.targets
 
-    x_tr_by_classes = {cl: x_train[y_train == cl] for cl in range(10)}
-    x_te_by_classes = {cl: x_test[y_test == cl] for cl in range(10)}
+    x_tr_by_classes = {}
+    x_te_by_classes = {}
+
+    for cl in range(10):
+        train_class = x_train[y_train == cl]
+        x_tr_by_classes[cl] = train_class[:int(len(train_class) * data_fraction)]
+        test_class = x_test[y_test == cl]
+        x_te_by_classes[cl] = test_class[:int(len(test_class) * data_fraction)]
 
     return x_tr_by_classes, x_te_by_classes
 
@@ -175,8 +188,9 @@ def get_dataloader(
         train_label_pairs,
         test_label_pairs,
         batch_size=128,
+        data_fraction=1.,
 ):
-    x_tr_by_classes, x_te_by_classes = get_by_class()
+    x_tr_by_classes, x_te_by_classes = get_by_class(data_fraction=data_fraction)
 
     train_data = MNISTAddition(x_tr_by_classes, train_label_pairs)
     test_data = MNISTAddition(x_te_by_classes, test_label_pairs)
@@ -190,9 +204,11 @@ def get_dataloader(
 def get_curriculum_dataloader(
         train_label_triplets,
         epochs,
+        use_curriculum,
         batch_size=128,
+        data_fraction=1.,
 ):
-    x_tr_by_classes, _ = get_by_class()
+    x_tr_by_classes, _ = get_by_class(data_fraction=data_fraction)
 
     train_loaders = []
 
@@ -203,10 +219,15 @@ def get_curriculum_dataloader(
 
     # Build the curriculum criteria
     for t in range(epochs):
-        criteria_pairs = [(x[0], x[1]) for x in sorted_train_triplets[:min((t + 1) * delta, N)]]
+        if use_curriculum:
+            criteria_pairs = [(x[0], x[1]) for x in sorted_train_triplets[:min((t + 1) * delta, N)]]
+        else:
+            # when curriculum learning is turned off, return the same data loader for each epoch
+            criteria_pairs = [(x[0], x[1]) for x in sorted_train_triplets]
+
         criteria_data = MNISTAddition(x_tr_by_classes, criteria_pairs)
         criteria_load = torch.utils.data.DataLoader(criteria_data, batch_size=batch_size)
-        train_loaders.append(criteria_load)
+        train_loaders.append((len(criteria_pairs), criteria_load))
 
     return train_loaders
 
@@ -215,19 +236,20 @@ def train_epoch(epoch_idx, model, optimizer, train_load, use_satlayer=True,
                 clip_norm=None, sched=None, do_maxsat_forward=False):
     tloader = tqdm(enumerate(train_load), total=len(train_load))
     acc_total = 0.
+    sym_acc_total = 0.
     loss_total = 0.
     total_samp = 0.
 
     model.train()
 
-    for batch_idx, (data, target) in tloader:
+    for batch_idx, (data, target, symbolic_truth) in tloader:
 
-        (data1, data2), target = data, target.cuda()
+        (data1, data2), target, symbolic_truth = data, target.cuda(), symbolic_truth.cuda()
         data1, data2 = data1.cuda(), data2.cuda()
         data = (data1, data2)
 
         optimizer.zero_grad()
-        output = model(data, return_sat=use_satlayer, do_maxsat=do_maxsat_forward)
+        output, symbolic_rep = model(data, return_sat=use_satlayer, do_maxsat=do_maxsat_forward)
         loss = F.binary_cross_entropy_with_logits(output, target)
         loss.backward()
         if clip_norm is not None:
@@ -239,54 +261,70 @@ def train_epoch(epoch_idx, model, optimizer, train_load, use_satlayer=True,
 
         with torch.no_grad():
             acc = torch.sum((torch.all(torch.sign(output) == 2 * (target - 0.5), dim=1)).type(torch.FloatTensor))
+            symbolic_acc = torch.sum(
+                (torch.all(torch.sign(symbolic_rep) == 2 * (symbolic_truth - 0.5), dim=1)).type(torch.FloatTensor))
 
         acc_total += acc.item()
+        sym_acc_total += symbolic_acc.item()
         loss_total += loss.item()
         total_samp += float(len(data1))
 
-        tloader.set_description('train {} loss={:.4} acc={:.4} lr={:.4}'.format(epoch_idx,
-                                                                                loss_total / (batch_idx + 1),
-                                                                                acc_total / total_samp,
-                                                                                optimizer.param_groups[0]['lr']))
+        tloader.set_description('train {} loss={:.4} output_acc={:.4} symbolic_acc={:.4}, lr={:.4}'.format(epoch_idx,
+                                                                                                           loss_total / (
+                                                                                                                       batch_idx + 1),
+                                                                                                           acc_total / total_samp,
+                                                                                                           sym_acc_total / total_samp,
+                                                                                                           optimizer.param_groups[
+                                                                                                               0][
+                                                                                                               'lr']))
 
     train_acc = acc_total / total_samp
+    train_sym_acc = sym_acc_total / total_samp
     train_loss = loss_total / (1 + len(train_load))
 
-    return train_acc, train_loss, tloader.format_dict['elapsed']
+    return train_acc, train_sym_acc, train_loss, tloader.format_dict['elapsed']
 
 
 def test_epoch(epoch_idx, model, test_load, use_satlayer=True):
     tloader = tqdm(enumerate(test_load), total=len(test_load))
     acc_total = 0.
+    sym_acc_total = 0.
     loss_total = 0.
     total_samp = 0.
 
     model.eval()
 
-    for batch_idx, (data, target) in tloader:
+    for batch_idx, (data, target, symbolic_truth) in tloader:
         with torch.no_grad():
-            (data1, data2), target = data, target.cuda()
+            (data1, data2), target, symbolic_truth = data, target.cuda(), symbolic_truth.cuda()
             data1, data2 = data1.cuda(), data2.cuda()
             data = (data1, data2)
 
-            output = model(data, return_sat=use_satlayer, do_maxsat=True)
+            output, symbolic_rep = model(data, return_sat=use_satlayer, do_maxsat=True)
 
             loss = F.binary_cross_entropy_with_logits(output, target)
             acc = torch.sum((torch.all(torch.sign(output) == 2 * (target - 0.5), dim=1)).type(torch.FloatTensor))
+            symbolic_acc = torch.sum(
+                (torch.all(torch.sign(symbolic_rep) == 2 * (symbolic_truth - 0.5), dim=1)).type(torch.FloatTensor))
+
             label = torch.argmax(output, dim=1)
 
-            acc_total += acc
+            acc_total += acc.item()
+            sym_acc_total += symbolic_acc.item()
             loss_total += loss.item()
             total_samp += float(len(data1))
 
-            tloader.set_description('test {} loss={:.4} acc={:.4}'.format(epoch_idx,
-                                                                          loss_total / (batch_idx + 1),
-                                                                          acc_total / total_samp))
+            tloader.set_description('test {} loss={:.4} acc={:.4} symbolic_acc={:.4}'.format(epoch_idx,
+                                                                                             loss_total / (
+                                                                                                         batch_idx + 1),
+                                                                                             acc_total / total_samp,
+                                                                                             sym_acc_total / total_samp))
 
-    test_acc = acc_total.cpu().detach().numpy() / total_samp
+    test_acc = acc_total / total_samp
+    test_sym_acc = sym_acc_total / total_samp
     test_loss = loss_total / (1 + len(test_load))
 
-    return test_acc, test_loss
+    return test_acc, test_sym_acc, test_loss
 
 
 def pretrain(model, optimizer, train_load, epochs, clip_norm=None):
@@ -325,60 +363,73 @@ def pretrain(model, optimizer, train_load, epochs, clip_norm=None):
                                                                               acc_total / total_samp))
 
 
-def train(model, optimizer, train_curriculum_load, test_load, epochs,
+def train(model, optimizer, train_curriculum_load, test_load, epochs, trial,
           use_satlayer=True, clip_norm=None, sched=None, do_sched_batch=False,
           do_maxsat_forward=None):
     times = []
 
+    trial_data = {
+        "trial": trial,
+        "epoch": [i for i in range(1, epochs + 1)],
+        "train_acc": [],
+        "train_sym_acc": [],
+        "test_acc": [],
+        "test_sym_acc": [],
+        "pairs": [j[0] for j in train_curriculum_load],
+        "samples": [sum(len(train_curriculum_load[j][1]) * 128 for j in range(0, i + 1)) for i in
+                    range(len(train_curriculum_load))],
+        "duration": [],
+    }
+
     for epoch in range(1, epochs + 1):
 
         if do_sched_batch:
-            train_acc, train_loss, elapsed = train_epoch(epoch, model, optimizer, train_curriculum_load[epoch-1],
-                                                         use_satlayer=use_satlayer, clip_norm=clip_norm, sched=sched,
-                                                         do_maxsat_forward=do_maxsat_forward)
+            train_acc, train_sym_acc, train_loss, elapsed = train_epoch(epoch, model, optimizer,
+                                                                        train_curriculum_load[epoch - 1][1],
+                                                                        use_satlayer=use_satlayer, clip_norm=clip_norm,
+                                                                        sched=sched,
+                                                                        do_maxsat_forward=do_maxsat_forward)
         else:
-            train_acc, train_loss, elapsed = train_epoch(epoch, model, optimizer, train_curriculum_load[epoch-1],
-                                                         use_satlayer=use_satlayer, clip_norm=clip_norm, sched=None,
-                                                         do_maxsat_forward=do_maxsat_forward)
+            train_acc, train_sym_acc, train_loss, elapsed = train_epoch(epoch, model, optimizer,
+                                                                        train_curriculum_load[epoch - 1][1],
+                                                                        use_satlayer=use_satlayer, clip_norm=clip_norm,
+                                                                        sched=None,
+                                                                        do_maxsat_forward=do_maxsat_forward)
             if sched is not None:
                 sched.step()
+        times.append(elapsed)
 
-        test_acc, test_loss = test_epoch(epoch, model, test_load, use_satlayer=use_satlayer)
+        trial_data["train_acc"].append(train_acc)
+        trial_data["train_sym_acc"].append(train_sym_acc)
+        trial_data["duration"].append(elapsed)
 
-        if train_acc > 0.999:
-            break
+        test_acc, test_sym_acc, test_loss = test_epoch(epoch, model, test_load, use_satlayer=use_satlayer)
 
-    return train_acc, test_acc, sum(times) / float(epochs)
+        trial_data["test_acc"].append(test_acc)
+        trial_data["test_sym_acc"].append(test_sym_acc)
+
+    print(trial_data)
+    return train_acc, train_sym_acc, test_sym_acc, test_acc, sum(times) / float(epochs), pd.DataFrame(trial_data)
 
 
-@click.command()
-@click.option('--lr', default=1., show_default=True, help='Learning rate.')
-@click.option('--pretrain_epochs', default=0, show_default=True, help='Number of pretraining epochs.')
-@click.option('--pct', default=100, show_default=True, help='% pairs to use in training data.')
-@click.option('--epochs', default=5, show_default=True, help='Number of epochs.')
-@click.option('--batch_size', default=128, show_default=True, help='Batch size.')
-@click.option('--trials', default=1, show_default=True, help='Number of trials.')
-@click.option('--clip_norm', default=0.1, show_default=True, help='Gradient clipping norm.')
-@click.option('--maxsat_forward', is_flag=True, show_default=True, help='Maxsat forward pass.')
-@click.option('--maxsat_backward', is_flag=True, show_default=True, help='Maxsat backward pass.')
-def main(
+def run(
         lr=1.,
         pretrain_epochs=0,
-        pct=10,
-        epochs=5,
+        pct=100,
+        epochs=10,
+        data_fraction=0.1,
         batch_size=128,
         trials=1,
         clip_norm=0.1,
         maxsat_forward=False,
-        maxsat_backward=False
+        maxsat_backward=False,
+        use_curriculum=True,
 ):
     test_label_pairs = list(itertools.product(list(range(0, 10)), repeat=2))
     if pct <= 10:
         train_label_pairs = [(0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8), (9, 9)]
     else:
         train_label_pairs = test_label_pairs[:int(pct)]
-
-    # TODO: MDG make 2 versions so that vanilla approach can also still be ran
 
     # Augment the label_pairs with the symbolic uncertainty scores
     scorer = VisualAdditionScorer()
@@ -388,21 +439,22 @@ def main(
     scores = scorer.score(s1_dom, s2_dom, y_dom)
     train_label_triples = [(a, b, scores[a + b]) for (a, b) in train_label_pairs]
 
+    print(
+        f"Starting experiment with trials={trials}, epochs={epochs}, data_fraction={data_fraction} and use_curriculum={use_curriculum}")
+
     # Take the number of epochs to be the number of curriculum criteria, create a custom data loader for each step
-    train_curriculum_load = get_curriculum_dataloader(train_label_triples, epochs, batch_size=batch_size)
+    train_curriculum_load = get_curriculum_dataloader(train_label_triples, epochs, use_curriculum,
+                                                      batch_size=batch_size, data_fraction=data_fraction)
 
     _, test_load = get_dataloader(train_label_pairs, test_label_pairs, batch_size=batch_size)
     pretrain_load, _ = get_dataloader(train_label_pairs, test_label_pairs, batch_size=512)
 
-    print('')
-    print('-' * 30)
-    print('new training sample')
-    print(train_label_pairs)
-    print('-' * 30)
-
     train_accs = []
+    train_sym_accs = []
     test_accs = []
+    test_sym_accs = []
     times = []
+    trial_dfs = []
 
     for i in range(trials):
         model = MNISTAdder(use_maxsmt=maxsat_backward).cuda()
@@ -410,31 +462,46 @@ def main(
         sched = torch.optim.lr_scheduler.OneCycleLR(optimizer,
                                                     lr,
                                                     epochs=epochs,
-                                                    steps_per_epoch=len(train_curriculum_load[0]),
+                                                    steps_per_epoch=len(train_curriculum_load[0][1]),
                                                     pct_start=1. / float(epochs))
 
         pretrain(model, optimizer, pretrain_load, pretrain_epochs, clip_norm=clip_norm)
 
-        train_acc, test_acc, elapsed = train(
-            model, optimizer, train_curriculum_load, test_load, epochs,
+        train_acc, train_sym_acc, test_sym_acc, test_acc, elapsed, trial_df = train(
+            model, optimizer, train_curriculum_load, test_load, epochs, i + 1,
             clip_norm=clip_norm, sched=sched, do_sched_batch=True,
             do_maxsat_forward=maxsat_forward
         )
 
         train_accs.append(train_acc)
+        train_sym_accs.append(train_sym_acc)
         test_accs.append(test_acc)
+        test_sym_accs.append(test_sym_acc)
         times.append(elapsed)
+        trial_dfs.append(trial_df)
 
-        print('\n[{} of trials]: train={:.4}, test={:.4}, time={:.4}\n'.format(i, train_acc, test_acc, elapsed))
+        print('\n[trial {} result]: train={:.4},{:.4}, test={:.4},{:.4} time={:.4}\n'.format(i + 1, train_acc,
+                                                                                             train_sym_acc, test_acc,
+                                                                                             test_sym_acc, elapsed))
         print('-' * 20)
 
+    result_df = pd.concat(trial_dfs, ignore_index=True)
+    now = datetime.now().strftime("%Y%m%d%H%M%S")
+    result_file = f"../results/{now}_{int(data_fraction * 100)}_{epochs}{'_curriculum' if use_curriculum else ''}.csv"
+    result_df.to_csv(result_file, index=False)
+    print(f"Results output written to {result_file}")
+
     train_accs = np.array(train_accs)
+    train_sym_accs = np.array(train_sym_accs)
     test_accs = np.array(test_accs)
+    test_sym_accs = np.array(test_sym_accs)
     times = np.array(times)
 
-    print('\nsmt pct={} stats: train={:.4} ({:.8}), test={:.4} ({:.8}), time={:.4} ({:.8})'.format(
-        pct, train_accs.mean(), train_accs.std(), test_accs.mean(), test_accs.std(), times.mean(), times.std()))
+    print(
+        '\nsmt pct={} stats: train={:.4} ({:.8}), {:.4} ({:.8}) test={:.4} ({:.8}), {:.4} ({:.8}) time={:.4} ({:.8})'.format(
+            pct, train_accs.mean(), train_accs.std(), train_sym_accs.mean(), train_sym_accs.std(), test_accs.mean(),
+            test_accs.std(), test_sym_accs.mean(), test_sym_accs.std(), times.mean(), times.std()))
 
 
 if __name__ == '__main__':
-    main()
+    run()
