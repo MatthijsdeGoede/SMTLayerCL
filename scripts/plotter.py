@@ -1,12 +1,13 @@
-import pandas as pd
-import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
+import pandas as pd
+import seaborn as sns
 
 
 def format_func(value, tick_number):
     # Format the value with comma separator for thousands
     return '{:,.0f}'.format(value)
+
 
 def plot_acc_for_samples_multiple():
     no_cl = pd.read_csv('../results/20240404122410_20_5.csv')
@@ -39,15 +40,18 @@ def plot_acc_for_samples_multiple():
                      mean_test_sym_no['test_sym_acc'] + std_test_sym_no['test_sym_acc'], alpha=0.2)
 
     sns.lineplot(data=cl_20_5, x='samples', y='test_sym_acc', label='SC CL_20_5', marker='o')
-    plt.fill_between(mean_test_sym_20_5['epoch'], mean_test_sym_20_5['test_sym_acc'] - std_test_sym_20_5['test_sym_acc'],
+    plt.fill_between(mean_test_sym_20_5['epoch'],
+                     mean_test_sym_20_5['test_sym_acc'] - std_test_sym_20_5['test_sym_acc'],
                      mean_test_sym_20_5['test_sym_acc'] + std_test_sym_20_5['test_sym_acc'], alpha=0.2)
 
     sns.lineplot(data=cl_10_10, x='samples', y='test_sym_acc', label='SC CL_10_10', marker='o')
-    plt.fill_between(mean_test_sym_10_10['epoch'], mean_test_sym_10_10['test_sym_acc'] - std_test_sym_10_10['test_sym_acc'],
+    plt.fill_between(mean_test_sym_10_10['epoch'],
+                     mean_test_sym_10_10['test_sym_acc'] - std_test_sym_10_10['test_sym_acc'],
                      mean_test_sym_10_10['test_sym_acc'] + std_test_sym_10_10['test_sym_acc'], alpha=0.2)
 
     sns.lineplot(data=cl_5_20, x='samples', y='test_sym_acc', label='SC CL_5_20', marker='o')
-    plt.fill_between(mean_test_sym_5_20['epoch'], mean_test_sym_5_20['test_sym_acc'] - std_test_sym_5_20['test_sym_acc'],
+    plt.fill_between(mean_test_sym_5_20['epoch'],
+                     mean_test_sym_5_20['test_sym_acc'] - std_test_sym_5_20['test_sym_acc'],
                      mean_test_sym_5_20['test_sym_acc'] + std_test_sym_5_20['test_sym_acc'], alpha=0.2)
 
     plt.xlabel('Number of Training Samples')
@@ -61,7 +65,6 @@ def plot_acc_for_samples_multiple():
     ax = plt.gca()
     ax.xaxis.set_major_formatter(ticker.FuncFormatter(format_func))
     plt.show()
-
 
 
 def plot_acc_for_samples(df, df_cl):
@@ -97,11 +100,13 @@ def plot_acc_for_samples(df, df_cl):
 
     # Plotting the lines for symbol correctness
     sns.lineplot(data=df, x='samples', y='test_sym_acc', label='SC BASE_20_5', marker='o')
-    plt.fill_between(mean_test_sym_without['epoch'], mean_test_sym_without['test_sym_acc'] - std_test_sym_without['test_sym_acc'],
+    plt.fill_between(mean_test_sym_without['epoch'],
+                     mean_test_sym_without['test_sym_acc'] - std_test_sym_without['test_sym_acc'],
                      mean_test_sym_without['test_sym_acc'] + std_test_sym_without['test_sym_acc'], alpha=0.2)
 
     sns.lineplot(data=df_cl, x='samples', y='test_sym_acc', label='SC CL_20_5', marker='o')
-    plt.fill_between(mean_test_sym_with['epoch'], mean_test_sym_with['test_sym_acc'] - std_test_sym_with['test_sym_acc'],
+    plt.fill_between(mean_test_sym_with['epoch'],
+                     mean_test_sym_with['test_sym_acc'] - std_test_sym_with['test_sym_acc'],
                      mean_test_sym_with['test_sym_acc'] + std_test_sym_with['test_sym_acc'], alpha=0.2)
 
     plt.title('Output and Symbol Correctness on Test Set vs Number of Samples Seen During Training')
@@ -139,7 +144,8 @@ def plot_acc_for_pairs(df_cl):
 
     # Plotting the line for symbol correctness
     sns.lineplot(data=df_cl, x='pairs', y='test_sym_acc', label='SC CL_100_5', marker='o')
-    plt.fill_between(mean_test_sym_with['epoch'], mean_test_sym_with['test_sym_acc'] - std_test_sym_with['test_sym_acc'],
+    plt.fill_between(mean_test_sym_with['epoch'],
+                     mean_test_sym_with['test_sym_acc'] - std_test_sym_with['test_sym_acc'],
                      mean_test_sym_with['test_sym_acc'] + std_test_sym_with['test_sym_acc'], alpha=0.2)
 
     plt.title('Output and Symbol Correctness on Test Set vs Percentage of Pairs Seen During Training')
@@ -155,12 +161,14 @@ def plot_acc_for_pairs(df_cl):
     ax.xaxis.set_major_formatter(ticker.FuncFormatter(format_func))
     plt.show()
 
+
+# For the CL_20_5 scenario
 without_cl = pd.read_csv('../results/20240404122410_20_5.csv')
 with_cl = pd.read_csv('../results/20240406170143_20_5_curriculum.csv')
 
 # Plot the test output and symbolic accuracy against the number of samples
 plot_acc_for_samples(without_cl, with_cl)
 # Plot the test output and symbolic accuracy against the percentage of seen pairs
-#plot_acc_for_pairs(with_cl)
+# plot_acc_for_pairs(with_cl)
 # Plot the symbolic accuracy against number of samples for each of the methods
 plot_acc_for_samples_multiple()

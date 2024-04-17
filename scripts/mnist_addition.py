@@ -1,5 +1,6 @@
 import itertools
 import random
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -11,12 +12,10 @@ import torchvision
 import z3
 from torch.utils.data import TensorDataset
 from tqdm import tqdm
-from datetime import datetime
 
 from scorer import VisualAdditionScorer
 from smtlayer import SMTLayer
 
-# Download CUDA: https://pytorch.org/get-started/locally/
 print(f"Cuda available: {torch.cuda.is_available()}")
 
 
@@ -36,7 +35,7 @@ class MNISTAddition(torch.utils.data.Dataset):
         self.bin_symbolic = np.vectorize(
             lambda x: np.array(list(np.binary_repr(x[0], 4)) + list(np.binary_repr(x[1], 4)), dtype=np.float32),
             signature="(m)->(n)"
-)
+        )
 
     def __len__(self):
         return self.len
@@ -46,7 +45,8 @@ class MNISTAddition(torch.utils.data.Dataset):
         inst1 = random.choice(self.by_classes[pair[0]]).unsqueeze(0)
         inst2 = random.choice(self.by_classes[pair[1]]).unsqueeze(0)
 
-        return (inst1, inst2), torch.tensor(self.bin_target(sum(pair))).float(), torch.tensor(self.bin_symbolic(pair)).float()
+        return (inst1, inst2), torch.tensor(self.bin_target(sum(pair))).float(), torch.tensor(
+            self.bin_symbolic(pair)).float()
 
 
 class MNISTExtractor(nn.Module):
@@ -234,7 +234,6 @@ def get_curriculum_dataloader(
 
 def train_epoch(epoch_idx, model, optimizer, train_load, use_satlayer=True,
                 clip_norm=None, sched=None, do_maxsat_forward=False):
-
     tloader = tqdm(enumerate(train_load), total=len(train_load))
     acc_total = 0.
     sym_acc_total = 0.
@@ -262,7 +261,8 @@ def train_epoch(epoch_idx, model, optimizer, train_load, use_satlayer=True,
 
         with torch.no_grad():
             acc = torch.sum((torch.all(torch.sign(output) == 2 * (target - 0.5), dim=1)).type(torch.FloatTensor))
-            symbolic_acc = torch.sum((torch.all(torch.sign(symbolic_rep) == 2 * (symbolic_truth - 0.5), dim=1)).type(torch.FloatTensor))
+            symbolic_acc = torch.sum(
+                (torch.all(torch.sign(symbolic_rep) == 2 * (symbolic_truth - 0.5), dim=1)).type(torch.FloatTensor))
 
         acc_total += acc.item()
         sym_acc_total += symbolic_acc.item()
@@ -270,10 +270,13 @@ def train_epoch(epoch_idx, model, optimizer, train_load, use_satlayer=True,
         total_samp += float(len(data1))
 
         tloader.set_description('train {} loss={:.4} output_acc={:.4} symbolic_acc={:.4}, lr={:.4}'.format(epoch_idx,
-                                                                                loss_total / (batch_idx + 1),
-                                                                                acc_total / total_samp,
-                                                                                sym_acc_total / total_samp,
-                                                                                optimizer.param_groups[0]['lr']))
+                                                                                                           loss_total / (
+                                                                                                                       batch_idx + 1),
+                                                                                                           acc_total / total_samp,
+                                                                                                           sym_acc_total / total_samp,
+                                                                                                           optimizer.param_groups[
+                                                                                                               0][
+                                                                                                               'lr']))
 
     train_acc = acc_total / total_samp
     train_sym_acc = sym_acc_total / total_samp
@@ -293,7 +296,6 @@ def test_epoch(epoch_idx, model, test_load, use_satlayer=True):
 
     for batch_idx, (data, target, symbolic_truth) in tloader:
         with torch.no_grad():
-
             (data1, data2), target, symbolic_truth = data, target.cuda(), symbolic_truth.cuda()
             data1, data2 = data1.cuda(), data2.cuda()
             data = (data1, data2)
@@ -302,7 +304,8 @@ def test_epoch(epoch_idx, model, test_load, use_satlayer=True):
 
             loss = F.binary_cross_entropy_with_logits(output, target)
             acc = torch.sum((torch.all(torch.sign(output) == 2 * (target - 0.5), dim=1)).type(torch.FloatTensor))
-            symbolic_acc = torch.sum((torch.all(torch.sign(symbolic_rep) == 2 * (symbolic_truth - 0.5), dim=1)).type(torch.FloatTensor))
+            symbolic_acc = torch.sum(
+                (torch.all(torch.sign(symbolic_rep) == 2 * (symbolic_truth - 0.5), dim=1)).type(torch.FloatTensor))
 
             label = torch.argmax(output, dim=1)
 
@@ -312,9 +315,10 @@ def test_epoch(epoch_idx, model, test_load, use_satlayer=True):
             total_samp += float(len(data1))
 
             tloader.set_description('test {} loss={:.4} acc={:.4} symbolic_acc={:.4}'.format(epoch_idx,
-                                                                          loss_total / (batch_idx + 1),
-                                                                          acc_total / total_samp,
-                                                                          sym_acc_total / total_samp))
+                                                                                             loss_total / (
+                                                                                                         batch_idx + 1),
+                                                                                             acc_total / total_samp,
+                                                                                             sym_acc_total / total_samp))
 
     test_acc = acc_total / total_samp
     test_sym_acc = sym_acc_total / total_samp
@@ -372,20 +376,25 @@ def train(model, optimizer, train_curriculum_load, test_load, epochs, trial,
         "test_acc": [],
         "test_sym_acc": [],
         "pairs": [j[0] for j in train_curriculum_load],
-        "samples": [sum(len(train_curriculum_load[j][1]) * 128 for j in range(0, i+1)) for i in range(len(train_curriculum_load))],
+        "samples": [sum(len(train_curriculum_load[j][1]) * 128 for j in range(0, i + 1)) for i in
+                    range(len(train_curriculum_load))],
         "duration": [],
     }
 
     for epoch in range(1, epochs + 1):
 
         if do_sched_batch:
-            train_acc, train_sym_acc, train_loss, elapsed = train_epoch(epoch, model, optimizer, train_curriculum_load[epoch-1][1],
-                                                         use_satlayer=use_satlayer, clip_norm=clip_norm, sched=sched,
-                                                         do_maxsat_forward=do_maxsat_forward)
+            train_acc, train_sym_acc, train_loss, elapsed = train_epoch(epoch, model, optimizer,
+                                                                        train_curriculum_load[epoch - 1][1],
+                                                                        use_satlayer=use_satlayer, clip_norm=clip_norm,
+                                                                        sched=sched,
+                                                                        do_maxsat_forward=do_maxsat_forward)
         else:
-            train_acc, train_sym_acc, train_loss, elapsed = train_epoch(epoch, model, optimizer, train_curriculum_load[epoch-1][1],
-                                                         use_satlayer=use_satlayer, clip_norm=clip_norm, sched=None,
-                                                         do_maxsat_forward=do_maxsat_forward)
+            train_acc, train_sym_acc, train_loss, elapsed = train_epoch(epoch, model, optimizer,
+                                                                        train_curriculum_load[epoch - 1][1],
+                                                                        use_satlayer=use_satlayer, clip_norm=clip_norm,
+                                                                        sched=None,
+                                                                        do_maxsat_forward=do_maxsat_forward)
             if sched is not None:
                 sched.step()
         times.append(elapsed)
@@ -401,6 +410,7 @@ def train(model, optimizer, train_curriculum_load, test_load, epochs, trial,
 
     print(trial_data)
     return train_acc, train_sym_acc, test_sym_acc, test_acc, sum(times) / float(epochs), pd.DataFrame(trial_data)
+
 
 def run(
         lr=1.,
@@ -429,10 +439,12 @@ def run(
     scores = scorer.score(s1_dom, s2_dom, y_dom)
     train_label_triples = [(a, b, scores[a + b]) for (a, b) in train_label_pairs]
 
-    print(f"Starting experiment with trials={trials}, epochs={epochs}, data_fraction={data_fraction} and use_curriculum={use_curriculum}")
+    print(
+        f"Starting experiment with trials={trials}, epochs={epochs}, data_fraction={data_fraction} and use_curriculum={use_curriculum}")
 
     # Take the number of epochs to be the number of curriculum criteria, create a custom data loader for each step
-    train_curriculum_load = get_curriculum_dataloader(train_label_triples, epochs, use_curriculum, batch_size=batch_size, data_fraction=data_fraction)
+    train_curriculum_load = get_curriculum_dataloader(train_label_triples, epochs, use_curriculum,
+                                                      batch_size=batch_size, data_fraction=data_fraction)
 
     _, test_load = get_dataloader(train_label_pairs, test_label_pairs, batch_size=batch_size)
     pretrain_load, _ = get_dataloader(train_label_pairs, test_label_pairs, batch_size=512)
@@ -456,7 +468,7 @@ def run(
         pretrain(model, optimizer, pretrain_load, pretrain_epochs, clip_norm=clip_norm)
 
         train_acc, train_sym_acc, test_sym_acc, test_acc, elapsed, trial_df = train(
-            model, optimizer, train_curriculum_load, test_load, epochs, i+1,
+            model, optimizer, train_curriculum_load, test_load, epochs, i + 1,
             clip_norm=clip_norm, sched=sched, do_sched_batch=True,
             do_maxsat_forward=maxsat_forward
         )
@@ -468,12 +480,14 @@ def run(
         times.append(elapsed)
         trial_dfs.append(trial_df)
 
-        print('\n[trial {} result]: train={:.4},{:.4}, test={:.4},{:.4} time={:.4}\n'.format(i+1, train_acc, train_sym_acc, test_acc, test_sym_acc, elapsed))
+        print('\n[trial {} result]: train={:.4},{:.4}, test={:.4},{:.4} time={:.4}\n'.format(i + 1, train_acc,
+                                                                                             train_sym_acc, test_acc,
+                                                                                             test_sym_acc, elapsed))
         print('-' * 20)
 
     result_df = pd.concat(trial_dfs, ignore_index=True)
     now = datetime.now().strftime("%Y%m%d%H%M%S")
-    result_file = f"../results/{now}_{int(data_fraction*100)}_{epochs}{'_curriculum' if use_curriculum else ''}.csv"
+    result_file = f"../results/{now}_{int(data_fraction * 100)}_{epochs}{'_curriculum' if use_curriculum else ''}.csv"
     result_df.to_csv(result_file, index=False)
     print(f"Results output written to {result_file}")
 
@@ -483,9 +497,10 @@ def run(
     test_sym_accs = np.array(test_sym_accs)
     times = np.array(times)
 
-    print('\nsmt pct={} stats: train={:.4} ({:.8}), {:.4} ({:.8}) test={:.4} ({:.8}), {:.4} ({:.8}) time={:.4} ({:.8})'.format(
-        pct, train_accs.mean(), train_accs.std(), train_sym_accs.mean(), train_sym_accs.std(), test_accs.mean(),
-        test_accs.std(), test_sym_accs.mean(), test_sym_accs.std(), times.mean(), times.std()))
+    print(
+        '\nsmt pct={} stats: train={:.4} ({:.8}), {:.4} ({:.8}) test={:.4} ({:.8}), {:.4} ({:.8}) time={:.4} ({:.8})'.format(
+            pct, train_accs.mean(), train_accs.std(), train_sym_accs.mean(), train_sym_accs.std(), test_accs.mean(),
+            test_accs.std(), test_sym_accs.mean(), test_sym_accs.std(), times.mean(), times.std()))
 
 
 if __name__ == '__main__':

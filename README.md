@@ -1,82 +1,29 @@
-# SMT Layer
+# SMTLayerCL
 
-**Code coming soon!**
+Implementation of SMTLayer with Curriculum Learning in Pytorch with Z3.
 
-Implementation of SMTLayer in Pytorch with Z3
-This code is the python companion to **Grounding Neural Inference with Satisfiability Modulo Theories**, which is appearing in NeurIPS 2023.
+This code is the python companion to the **Enhancing the Training of Neuro-Symbolic Neural
+Networks through Curriculum Learning based on
+Symbolic Domain Knowledge** paper by Matthijs de Goede and is an adaptation of the original SMTLayer implementation: https://github.com/cmu-transparency/smt-layer
 
- In this paper we present a set of techniques for integrating Satisfiability Modulo Theories (SMT) solvers into the forward and backward passes of a deep network layer, called SMTLayer. **Notably, the solver needs not be differentiable.** We implement SMTLayer as a Pytorch module. An overview of our work is shown as follows.
+To install the requirements, run: 
+```pip install -r requirements.txt```
 
-<img width="1026" alt="smt_layer" src="./images/teaser_figure.png">
+The original SMTLayer was just adapted to incorporate symbol correctness, and can be found in
+```smtlayer/smtlayer.py```
 
-SMTLayers, when used on top of other neural network layers, can be leveraged to solve many tasks requiring logical reasoning. For example, the addition of two digits in an image. Morever, we show how to do visual Sudoku, Lier's Puzzle (above), etc.
-<img width="660" alt="example" src="./images/mnist_addition.png">
+The class implementing the calculation of the heuristic that corresponds to ```Algorithm 1``` in the paper can be found in
+```scorer.py```
 
+The original script to run the Visual MNIST task in ```scripts/mnist_addition.py``` has been adapted to incorporate symbol correctness and to use curriculum learning.
+The curriculum construction in accordance with ```Algorithm 2``` from the paper is implemented using custom data loader,
+for which most important details can be found in the ```get_curriculum_dataloader``` method.
 
-We implement SMTLayer as a Pytorch module, and our empirical results show that it leads to models that 1) require fewer training samples than conventional models, 2) that are robust to certain types of covariate shift, and 3) that ultimately learn representations that are consistent with symbolic knowledge, and thus naturally interpretable.
+The results of the experiments, along with the plots can be found under ```results```
 
-<img width="1000" alt="table" src="./images/table.png">
+The folder ```scripts``` further contains a few helper methods that were used to process the results.
+```scripts/plotter.py``` was used to generate the plots from the paper. ```scripts/tabler.py``` was used to construct ```Table 1``` 
+and ```scripts/time_pre_processing.py``` was used to calculate the average calculation times for the heuristic score during execution. 
 
-
-## Prerequisites
-
-You may need the following dependencies installed on your system:
-
-- Python (3.6+)
-- PyTorch
-- torchvision
-- matplotlib
-- livelossplot
-- z3
-
-Depending on your operating system, you can install z3 using different methods. Here's how to install z3 using `pip`:
-
-```bash
-pip install z3-solver
-```
-
-Otherwise follow the instructions [here](https://github.com/Z3Prover/z3).
-
-
-## Data Preparation
-Datasets used in the paper are included in `notebook/` execept MNIST, which is publicly available. For example, you can download from Pytorch.
-```python
-import torchvision
-from torchvision import transforms
-
-# Define a transformation
-transform = transforms.Compose([transforms.ToTensor()])
-
-# Download and transform the training dataset
-mnist_train = torchvision.datasets.MNIST(
-    '/data/data', 
-    train=True, 
-    download=True, 
-    transform=transform
-)
-
-# Download and transform the test dataset
-mnist_test = torchvision.datasets.MNIST(
-    '/data/data', 
-    train=False, 
-    download=True, 
-    transform=transform
-)
-```
-
-Replace '/data/data' with the appropriate path where you want to store the dataset.
-
-
-## Acknowledgments
-
-If you use this code please cite
-```
-@inproceedings{
-    wang2023grounding,
-    title={Grounding Neural Inference with Satisfiability Modulo Theories},
-    author={Zifan Wang and Saranya Vijaykumar and Kaiji Lu and Vijay Ganesh and Somesh Jha and Matt Fredrikson},
-    booktitle={Thirty-seventh Conference on Neural Information Processing Systems},
-    year={2023},
-    url={https://openreview.net/forum?id=r8snfquzs3}
-}
-```
+To re-run our experiments run ```scripts/runner.py```. Here one can also schedule alternative experiments, using a custom configuration based on the named parameters from the ```run```
+method in ```scripts/mnist_addition.py```

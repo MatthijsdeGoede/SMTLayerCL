@@ -1,5 +1,6 @@
 import itertools
 import time
+
 import numpy as np
 
 from scorer import VisualAdditionScorer
